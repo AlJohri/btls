@@ -22,6 +22,8 @@ pub(crate) struct Features {
     pub(crate) rpk: bool,
     pub(crate) underscore_wildcards: bool,
     pub(crate) prefix_symbols: bool,
+    pub(crate) allow_crl_extensions_bad_version: bool,
+    pub(crate) relax_cert_validation: bool,
 }
 
 pub(crate) struct Env {
@@ -72,6 +74,12 @@ impl Config {
             .as_ref()
             .is_some_and(|path| path.join("src").exists());
 
+        // DEP_BTLS_VERSION_MAJOR
+        println!(
+            "cargo:version_major={}",
+            env::var("CARGO_PKG_VERSION_MAJOR").unwrap_or_default()
+        );
+
         let config = Self {
             manifest_dir,
             out_dir,
@@ -97,6 +105,27 @@ impl Config {
             return Err("`fips` and `rpk` features are mutually exclusive");
         }
 
+        // BoringSSL's BUILDING.md: "symbol prefixing cannot be used with the combination of
+        // FIPS and static libraries". This crate always links BoringSSL statically, so the
+        // combination is unsupported and would silently produce an unprefixed FIPS module.
+        if self.features.is_fips_like() && self.features.prefix_symbols {
+            return Err(
+                "`fips` and `prefix-symbols` features are mutually exclusive, because BoringSSL \
+                does not support symbol prefixing for static FIPS builds",
+            );
+        }
+
+        // Symbol prefixing regenerates BoringSSL's prefix list from the patched headers,
+        // which means writing into the source tree. A caller-owned tree may be read-only,
+        // shared between concurrent target builds, or expected to stay untouched.
+        if self.features.prefix_symbols && self.env.source_path.is_some() {
+            return Err(
+                "`prefix-symbols` cannot be used with `BORING_BSSL{,_FIPS}_SOURCE_PATH`, \
+                because symbol prefixing regenerates BoringSSL's prefix list and would write \
+                it into the provided source tree. Build from the vendored submodule instead.",
+            );
+        }
+
         let is_precompiled_native_lib = self.env.path.is_some();
         let is_external_native_lib_source =
             !is_precompiled_native_lib && self.env.source_path.is_none();
@@ -108,7 +137,9 @@ impl Config {
             );
         }
 
-        let features_with_patches_enabled = self.features.rpk || self.features.underscore_wildcards;
+        let features_with_patches_enabled = self.features.rpk
+            || self.features.underscore_wildcards
+            || self.features.relax_cert_validation;
 
         let patches_required = features_with_patches_enabled && !self.env.assume_patched;
 
@@ -127,16 +158,13 @@ impl Config {
 
 impl Features {
     fn from_env() -> Self {
-        let fips = env::var_os("CARGO_FEATURE_FIPS").is_some();
-        let rpk = env::var_os("CARGO_FEATURE_RPK").is_some();
-        let underscore_wildcards = env::var_os("CARGO_FEATURE_UNDERSCORE_WILDCARDS").is_some();
-        let prefix_symbols = env::var_os("CARGO_FEATURE_PREFIX_SYMBOLS").is_some();
-
         Self {
-            fips,
-            rpk,
-            underscore_wildcards,
-            prefix_symbols,
+            fips: cfg!(feature = "fips"),
+            rpk: cfg!(feature = "rpk"),
+            underscore_wildcards: cfg!(feature = "underscore-wildcards"),
+            prefix_symbols: cfg!(feature = "prefix-symbols"),
+            allow_crl_extensions_bad_version: cfg!(feature = "allow-crl-extensions-bad-version"),
+            relax_cert_validation: cfg!(feature = "relax-cert-validation"),
         }
     }
 
