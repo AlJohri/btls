@@ -662,9 +662,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if config.features.prefix_symbols {
         match config.target_os.as_str() {
-            "macos" | "ios" | "windows" => {
+            "windows" => {
                 println!(
-                    "cargo:warning=The `prefix_symbols` feature is not supported on macOS/iOS or Windows targets. Skipping symbol prefixing."
+                    "cargo:warning=The `prefix_symbols` feature is not supported on Windows targets. Skipping symbol prefixing."
                 );
             }
             _ => {

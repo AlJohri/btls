@@ -1,5 +1,5 @@
 use crate::{config::Config, pick_best_android_ndk_toolchain, run_command};
-use std::{fs, io::Write, path::PathBuf, process::Command};
+use std::{env, fs, io::Write, path::PathBuf, process::Command};
 
 // The prefix to add to all symbols
 // Using crate name to avoid collisions with other projects
@@ -30,6 +30,40 @@ fn android_toolchain(config: &Config) -> PathBuf {
     android_bin_path
 }
 
+fn is_apple(config: &Config) -> bool {
+    matches!(&*config.target_os, "macos" | "ios")
+}
+
+// Xcode ships `nm` but no `objcopy`. `BTLS_SYS_LLVM_OBJCOPY` wins, then the
+// active Xcode toolchain, then Rust's `llvm-tools` component.
+fn apple_llvm_objcopy() -> PathBuf {
+    if let Some(path) = env::var_os("BTLS_SYS_LLVM_OBJCOPY") {
+        return path.into();
+    }
+    if let Ok(out) = Command::new("xcrun")
+        .args(["--find", "llvm-objcopy"])
+        .output()
+    {
+        if out.status.success() {
+            return PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        }
+    }
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    if let (Ok(out), Ok(host)) = (
+        Command::new(rustc).args(["--print", "sysroot"]).output(),
+        env::var("HOST"),
+    ) {
+        let candidate = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+            .join("lib/rustlib")
+            .join(host)
+            .join("bin/llvm-objcopy");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("llvm-objcopy")
+}
+
 pub fn prefix_symbols(config: &Config) {
     // List static libraries to prefix symbols in
     let static_libs: Vec<PathBuf> = [
@@ -52,16 +86,29 @@ pub fn prefix_symbols(config: &Config) {
         _ => PathBuf::from("nm"),
     };
     let out = run_command(Command::new(nm).args(&static_libs)).unwrap();
+    let apple = is_apple(config);
+    // Mach-O `nm` reports data outside __data/__bss as `S`.
+    let kinds: &[&str] = if apple {
+        &[" T ", " D ", " B ", " C ", " R ", " W ", " S "]
+    } else {
+        &[" T ", " D ", " B ", " C ", " R ", " W "]
+    };
     let mut redefine_syms: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|l| {
-            [" T ", " D ", " B ", " C ", " R ", " W "]
-                .iter()
-                .any(|s| l.contains(s))
-        })
+        .filter(|l| kinds.iter().any(|s| l.contains(s)))
         .filter_map(|l| l.split_whitespace().nth(2).map(|s| s.to_string()))
-        .filter(|l| !l.starts_with("_"))
-        .map(|l| format!("{l} {PREFIX}_{l}"))
+        .filter_map(|l| {
+            if apple {
+                // Mach-O prepends `_` to every C symbol; `__Z...` is C++.
+                l.strip_prefix('_')
+                    .filter(|name| !name.starts_with('_'))
+                    .map(|name| format!("_{name} _{PREFIX}_{name}"))
+            } else if l.starts_with('_') {
+                None
+            } else {
+                Some(format!("{l} {PREFIX}_{l}"))
+            }
+        })
         .collect();
     redefine_syms.sort();
     redefine_syms.dedup();
@@ -76,6 +123,7 @@ pub fn prefix_symbols(config: &Config) {
     // Use `objcopy` to prefix symbols in these static libraries
     let objcopy = match &*config.target_os {
         "android" => android_toolchain(config).join("llvm-objcopy"),
+        "macos" | "ios" => apple_llvm_objcopy(),
         _ => PathBuf::from("objcopy"),
     };
     for static_lib in &static_libs {
