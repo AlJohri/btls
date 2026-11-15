@@ -10,9 +10,7 @@ use std::process::{Command, Output};
 use std::sync::OnceLock;
 
 use crate::config::Config;
-use crate::prefix::{
-    audit_prefixed_symbols, find_archive, regenerate_prefix_symbols, PrefixCallback, PREFIX,
-};
+use crate::prefix::{regenerate_prefix_symbols, PrefixCallback, PREFIX};
 
 mod config;
 mod prefix;
@@ -489,11 +487,6 @@ fn ensure_patches_applied(config: &Config) -> io::Result<()> {
     }
 
     // Only the symbol audit reads this tool, and only a prefixed build runs it.
-    if config.features.prefix_symbols {
-        println!("cargo:warning=applying symbol audit patch to boringssl");
-        apply_patch(config, "boringssl-audit-symbols.patch")?;
-    }
-
     println!("cargo:warning=applying loongarch patch to boringssl");
     apply_patch(config, "boringssl-loongarch.patch")?;
 
@@ -694,22 +687,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if !config.env.docs_rs {
         emit_link_directives(&config);
-        if config.features.prefix_symbols && config.env.path.is_none() {
-            let bssl_dir = build_boringssl_or_get_prebuilt(&config);
-            let msvc_subdir = msvc_lib_subdir(&config);
-            // libssl holds the C++ symbols that `prefix_symbols.h` cannot rename, so it
-            // needs the audit at least as much as libcrypto does.
-            let archives = ["crypto", "ssl"]
-                .into_iter()
-                .map(|library| find_archive(bssl_dir, &config.target_env, msvc_subdir, library))
-                .collect::<io::Result<Vec<_>>>()?;
-            audit_prefixed_symbols(
-                get_boringssl_source_path(&config),
-                &archives,
-                &config.target_os,
-            )
-            .map_err(|e| format!("BoringSSL's prefixed symbol audit failed: {e}"))?;
-        }
     }
     generate_bindings(&config).map_err(|e| format!("could not generate bindings: {e}"))?;
     if let Some(install_dir) = &config.env.export_to_install_dir {
