@@ -7,14 +7,19 @@ const PREFIX: &str = env!("CARGO_CRATE_NAME");
 
 // Callback to add a `link_name` macro with the prefix to all generated bindings
 #[derive(Debug)]
-pub struct PrefixCallback;
+pub struct PrefixCallback {
+    // bindgen emits overrides as `\u{1}name`, which LLVM does not decorate, so
+    // Mach-O's leading `_` has to be part of the name.
+    pub apple: bool,
+}
 
 impl bindgen::callbacks::ParseCallbacks for PrefixCallback {
     fn generated_link_name_override(
         &self,
         item_info: bindgen::callbacks::ItemInfo<'_>,
     ) -> Option<String> {
-        Some(format!("{PREFIX}_{}", item_info.name))
+        let underscore = if self.apple { "_" } else { "" };
+        Some(format!("{underscore}{PREFIX}_{}", item_info.name))
     }
 }
 
@@ -30,7 +35,7 @@ fn android_toolchain(config: &Config) -> PathBuf {
     android_bin_path
 }
 
-fn is_apple(config: &Config) -> bool {
+pub fn is_apple(config: &Config) -> bool {
     matches!(&*config.target_os, "macos" | "ios")
 }
 
