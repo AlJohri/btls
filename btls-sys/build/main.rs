@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 use std::sync::OnceLock;
 
 use crate::config::Config;
-use crate::prefix::{prefix_symbols, PrefixCallback};
+use crate::prefix::{is_apple, prefix_symbols, PrefixCallback};
 
 mod config;
 mod prefix;
@@ -662,9 +662,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if config.features.prefix_symbols {
         match config.target_os.as_str() {
-            "macos" | "ios" | "windows" => {
+            "windows" => {
                 println!(
-                    "cargo:warning=The `prefix_symbols` feature is not supported on macOS/iOS or Windows targets. Skipping symbol prefixing."
+                    "cargo:warning=The `prefix_symbols` feature is not supported on Windows targets. Skipping symbol prefixing."
                 );
             }
             _ => {
@@ -794,7 +794,9 @@ fn generate_bindings(config: &Config) -> Result<PathBuf, Box<dyn std::error::Err
     }
 
     if config.features.prefix_symbols {
-        builder = builder.parse_callbacks(Box::new(PrefixCallback));
+        builder = builder.parse_callbacks(Box::new(PrefixCallback {
+            apple: is_apple(config),
+        }));
     }
 
     let must_have_headers = [
